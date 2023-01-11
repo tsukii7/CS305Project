@@ -20,7 +20,7 @@ BUF_SIZE = 1400
 CHUNK_DATA_SIZE = 512 * 1024
 HEADER_LEN = struct.calcsize("HBBHHII")
 MAX_PAYLOAD = 1024
-TIME_OUT = 3
+TIME_OUT = 2
 
 config = None
 ex_output_file = None
@@ -30,7 +30,6 @@ ex_downloading_chunkhash = dict()
 ex_sending_chunkhash = []
 start_timer = -1
 ack_present = 1
-is_timeout = False
 retrans_chunk = None
 retrans_addr = None
 
@@ -80,7 +79,6 @@ def process_inbound_udp(sock):
     global ex_sending_chunkhash
     global start_timer
     global ack_present
-    global is_timeout
     global retrans_chunk
     global retrans_addr
 
@@ -213,7 +211,6 @@ def process_inbound_udp(sock):
         # TODO:结束上一个计时器
         ack_num = socket.ntohl(Ack)
         if ack_num == ack_present:
-            is_timeout = False
             start_timer = -1
             chunk_hash = data[:20]
             chunkhash_str = bytes.hex(chunk_hash)
@@ -239,12 +236,6 @@ def process_inbound_udp(sock):
                 start_timer = time.time()
                 ack_present = ack_num + 1
 
-    if is_timeout:  # 超时重传
-        is_timeout = False
-        sock.sendto(retrans_chunk, retrans_addr)
-        start_timer = time.time()
-
-
 
 def process_user_input(sock):
     command, chunkf, outf = input().split(' ')
@@ -255,8 +246,9 @@ def process_user_input(sock):
 
 
 def peer_run(config):
-    global is_timeout
     global start_timer
+    global retrans_chunk
+    global retrans_addr
 
     addr = (config.ip, config.port)
     sock = simsocket.SimSocket(config.identity, addr, verbose=config.verbose)
@@ -265,7 +257,7 @@ def peer_run(config):
         while True:
             # TODO: 遍历计时器，判断是否超时，若超时，则重传data，重置计时
             if start_timer != -1 and time.time() - start_timer > TIME_OUT:
-                is_timeout = True
+                sock.sendto(retrans_chunk, retrans_addr)
                 start_timer = time.time()
             ready = select.select([sock, sys.stdin], [], [], 0.1)
             read_ready = ready[0]
