@@ -10,6 +10,7 @@ import util.bt_utils as bt_utils
 import hashlib
 import argparse
 import pickle
+import time
 
 """
 This is CS305 project skeleton code.
@@ -19,6 +20,7 @@ BUF_SIZE = 1400
 CHUNK_DATA_SIZE = 512 * 1024
 HEADER_LEN = struct.calcsize("HBBHHII")
 MAX_PAYLOAD = 1024
+TIME_OUT = 3
 
 config = None
 ex_output_file = None
@@ -26,6 +28,11 @@ ex_received_chunk = dict()
 # {chunk_hash:0(not GET)/chunk_hash:1(already GET)}
 ex_downloading_chunkhash = dict()
 ex_sending_chunkhash = []
+start_timer = -1
+ack_present = 1
+is_timeout = False
+retrans_chunk = None
+retrans_addr = None
 
 
 def process_download(sock, chunkfile, outputfile):
@@ -71,6 +78,11 @@ def process_inbound_udp(sock):
     # Receive pkt
     global config
     global ex_sending_chunkhash
+    global start_timer
+    global ack_present
+    global is_timeout
+    global retrans_chunk
+    global retrans_addr
 
     # TODO: 根据from_addr(socket)从全局变量中读取正在传输的chunk_hash(如有）
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
@@ -142,9 +154,12 @@ def process_inbound_udp(sock):
         # send back DATA
         chunk_hash_chunk_data = chunk_hash + chunk_data
         data_header = struct.pack("HBBHHII", socket.htons(52305), 3, 3, socket.htons(HEADER_LEN),
-                                  socket.htons(HEADER_LEN+len(chunk_hash_chunk_data)), socket.htonl(1), 0)
+                                  socket.htons(HEADER_LEN + len(chunk_hash_chunk_data)), socket.htonl(1), 0)
         sock.sendto(data_header + chunk_hash_chunk_data, from_addr)
         # TODO:添加全局变量计时器
+        start_timer = time.time()
+        ack_present = 1
+
 
     elif Type == 3:
         # received a DATA pkt
@@ -160,7 +175,7 @@ def process_inbound_udp(sock):
         # ack_pkt = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN), socket.htons(HEADER_LEN),
         #                       0, Seq)
         ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
-                                 socket.htons(HEADER_LEN+len(chunk_hash)),
+                                 socket.htons(HEADER_LEN + len(chunk_hash)),
                                  0, Seq)
         ack_pkt = ack_header + chunk_hash
 
@@ -197,23 +212,38 @@ def process_inbound_udp(sock):
         # received an ACK pkt
         # TODO:结束上一个计时器
         ack_num = socket.ntohl(Ack)
-        chunk_hash = data[:20]
-        chunkhash_str = bytes.hex(chunk_hash)
-        if (ack_num) * MAX_PAYLOAD >= CHUNK_DATA_SIZE:
-            # finished
-            print(f"finished sending {chunkhash_str}")
-            # print(f"finished sending {ex_sending_chunkhash}")
-            pass
-        else:
-            left = (ack_num) * MAX_PAYLOAD
-            right = min((ack_num + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
-            # next_data = config.haschunks[ex_sending_chunkhash][left: right]
-            next_data = config.haschunks[chunkhash_str][left: right]
-            # send next data
-            data_header = struct.pack("HBBHHII", socket.htons(52305), 3, 3, socket.htons(HEADER_LEN),
-                                      socket.htons(HEADER_LEN + len(chunk_hash + next_data)), socket.htonl(ack_num + 1), 0)
-            sock.sendto(data_header + chunk_hash + next_data, from_addr)
-            # TODO:开始新的计时器
+        if ack_num == ack_present:
+            is_timeout = False
+            start_timer = -1
+            chunk_hash = data[:20]
+            chunkhash_str = bytes.hex(chunk_hash)
+            if (ack_num) * MAX_PAYLOAD >= CHUNK_DATA_SIZE:
+                # finished
+                print(f"finished sending {chunkhash_str}")
+                # print(f"finished sending {ex_sending_chunkhash}")
+                pass
+            else:
+                left = (ack_num) * MAX_PAYLOAD
+                right = min((ack_num + 1) * MAX_PAYLOAD, CHUNK_DATA_SIZE)
+                # next_data = config.haschunks[ex_sending_chunkhash][left: right]
+                next_data = config.haschunks[chunkhash_str][left: right]
+                # send next data
+                data_header = struct.pack("HBBHHII", socket.htons(52305), 3, 3, socket.htons(HEADER_LEN),
+                                          socket.htons(HEADER_LEN + len(chunk_hash + next_data)),
+                                          socket.htonl(ack_num + 1),
+                                          0)
+                retrans_chunk = data_header + chunk_hash + next_data
+                retrans_addr = from_addr
+                sock.sendto(data_header + chunk_hash + next_data, from_addr)
+                # TODO:开始新的计时器
+                start_timer = time.time()
+                ack_present = ack_num + 1
+
+    if is_timeout:  # 超时重传
+        is_timeout = False
+        sock.sendto(retrans_chunk, retrans_addr)
+        start_timer = time.time()
+
 
 
 def process_user_input(sock):
@@ -225,12 +255,18 @@ def process_user_input(sock):
 
 
 def peer_run(config):
+    global is_timeout
+    global start_timer
+
     addr = (config.ip, config.port)
     sock = simsocket.SimSocket(config.identity, addr, verbose=config.verbose)
 
     try:
         while True:
             # TODO: 遍历计时器，判断是否超时，若超时，则重传data，重置计时
+            if start_timer != -1 and time.time() - start_timer > TIME_OUT:
+                is_timeout = True
+                start_timer = time.time()
             ready = select.select([sock, sys.stdin], [], [], 0.1)
             read_ready = ready[0]
             if len(read_ready) > 0:
@@ -239,7 +275,7 @@ def peer_run(config):
                 if sys.stdin in read_ready:
                     process_user_input(sock)
             else:
-                # No pkt nor input arrives during this period 
+                # No pkt nor input arrives during this period
                 pass
     except KeyboardInterrupt:
         pass
