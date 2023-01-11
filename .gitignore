@@ -1,3 +1,7 @@
 .idea/
 *.iml
 *.xml
+*.xml
+.idea/deployment.xml
+.idea/CS305Project.iml
+.idea/misc.xml
