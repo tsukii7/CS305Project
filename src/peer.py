@@ -23,6 +23,7 @@ MAX_PAYLOAD = 1024
 config = None
 ex_output_file = None
 ex_received_chunk = dict()
+# {chunk_hash:0(not GET)/chunk_hash:1(already GET)}
 ex_downloading_chunkhash = dict()
 ex_sending_chunkhash = []
 
@@ -71,6 +72,7 @@ def process_inbound_udp(sock):
     global config
     global ex_sending_chunkhash
 
+    # TODO: 根据from_addr(socket)从全局变量中读取正在传输的chunk_hash(如有）
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
     Magic, Team, Type, hlen, plen, Seq, Ack = struct.unpack("HBBHHII", pkt[:HEADER_LEN])
     data = pkt[HEADER_LEN:]
@@ -82,6 +84,7 @@ def process_inbound_udp(sock):
         for i in range(0, len(data), 20):
             whohas_chunk_hash_list.append(data[i:i + 20])
         # whohas_chunk_hash = data[:20]
+        ihave_chunk_hash = bytes()
         for i in range(len(whohas_chunk_hash_list)):
             whohas_chunk_hash = whohas_chunk_hash_list[i]
             # bytes to hex_str
@@ -90,46 +93,58 @@ def process_inbound_udp(sock):
 
             print(f"whohas: {chunkhash_str}, has: {list(config.haschunks.keys())}")
             if chunkhash_str in config.haschunks:
-                # send back IHAVE pkt
-                ihave_header = struct.pack("HBBHHII", socket.htons(52305), 3, 1, socket.htons(HEADER_LEN),
-                                           socket.htons(HEADER_LEN + len(whohas_chunk_hash)), socket.htonl(0),
-                                           socket.htonl(0))
-                ihave_pkt = ihave_header + whohas_chunk_hash
-                sock.sendto(ihave_pkt, from_addr)
-                # 是否选择对每个request的whohas_chunk_hash都发送IHAVE报文回复
-                break
+                ihave_chunk_hash += bytes.fromhex(chunkhash_str)
+
+        # send back IHAVE pkt
+        if len(ihave_chunk_hash) > 0:
+            ihave_header = struct.pack("HBBHHII", socket.htons(52305), 3, 1, socket.htons(HEADER_LEN),
+                                       socket.htons(HEADER_LEN + len(ihave_chunk_hash)), socket.htonl(0),
+                                       socket.htonl(0))
+            ihave_pkt = ihave_header + ihave_chunk_hash
+            sock.sendto(ihave_pkt, from_addr)
 
     elif Type == 1:
         # received an IHAVE pkt
         # see what chunk the sender has
-        get_chunk_hash = data[:20]
-        chunkhash_str = bytes.hex(get_chunk_hash)
-        chunk_hash_list = list(ex_downloading_chunkhash.keys())
-        for hash in chunk_hash_list:
-            # print("chunk hash:" + chunkhash_str)
-            # print("hash:" + hash)
-            if chunkhash_str == hash and ex_downloading_chunkhash[hash] == 0:
-                # send back GET pkt
-                get_header = struct.pack("HBBHHII", socket.htons(52305), 3, 2, socket.htons(HEADER_LEN),
-                                         socket.htons(HEADER_LEN + len(get_chunk_hash)), socket.htonl(0),
-                                         socket.htonl(0))
-                get_pkt = get_header + get_chunk_hash
-                sock.sendto(get_pkt, from_addr)
-                ex_downloading_chunkhash[hash] = 1
-                break
+        get_chunk_hash_list = []
+        for i in range(0, len(data), 20):
+            get_chunk_hash_list.append(data[i:i + 20])
+        if len(get_chunk_hash_list) == 1:
+            get_chunk_hash = get_chunk_hash_list[0]
+            chunkhash_str = bytes.hex(get_chunk_hash)
+            chunk_hash_list = list(ex_downloading_chunkhash.keys())
+            for hash in chunk_hash_list:
+                # print("chunk hash:" + chunkhash_str)
+                # print("hash:" + hash)
+                # ex_downloading_chunkhash[hash] == 0 判断是否发送对应chunk_hahs的GET请求
+                if chunkhash_str == hash and ex_downloading_chunkhash[hash] == 0:
+                    # send back GET pkt
+                    get_header = struct.pack("HBBHHII", socket.htons(52305), 3, 2, socket.htons(HEADER_LEN),
+                                             socket.htons(HEADER_LEN + len(get_chunk_hash)), socket.htonl(0),
+                                             socket.htonl(0))
+                    get_pkt = get_header + get_chunk_hash
+                    sock.sendto(get_pkt, from_addr)
+                    # TODO:在完成三次握手后，在全局变量中建立{socket:chunk_hash}映射
+                    ex_downloading_chunkhash[hash] = 1
+                    break
+        else:
+            # TODO:在全局变量中存储其他peer已有但未请求的chunk_hash
+            save_chunk_hash = get_chunk_hash_list[1:]
 
     elif Type == 2:
         # received a GET pkt
+        # TODO: 移除报文中的chunk_hash
         chunk_hash = data[:20]
         chunkhash_str = bytes.hex(chunk_hash)
         # print("DATA chunkhash_str:" + chunkhash_str)
         chunk_data = config.haschunks[chunkhash_str][:MAX_PAYLOAD]
 
         # send back DATA
+        chunk_hash_chunk_data = chunk_hash + chunk_data
         data_header = struct.pack("HBBHHII", socket.htons(52305), 3, 3, socket.htons(HEADER_LEN),
-                                  socket.htons(HEADER_LEN), socket.htonl(1), 0)
-        # print("sendto:" + str(bytes.hex(data_header + chunk_hash + chunk_data)))
-        sock.sendto(data_header + chunk_hash + chunk_data, from_addr)
+                                  socket.htons(HEADER_LEN+len(chunk_hash_chunk_data)), socket.htonl(1), 0)
+        sock.sendto(data_header + chunk_hash_chunk_data, from_addr)
+        # TODO:添加全局变量计时器
 
     elif Type == 3:
         # received a DATA pkt
@@ -145,7 +160,7 @@ def process_inbound_udp(sock):
         # ack_pkt = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN), socket.htons(HEADER_LEN),
         #                       0, Seq)
         ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
-                                 socket.htons(HEADER_LEN),
+                                 socket.htons(HEADER_LEN+len(chunk_hash)),
                                  0, Seq)
         ack_pkt = ack_header + chunk_hash
 
@@ -172,6 +187,7 @@ def process_inbound_udp(sock):
             print(f"Received chunkhash: {received_chunkhash_str}")
             success = chunkhash_str == received_chunkhash_str
             print(f"Successful received: {success}")
+            # TODO: 重置{socket:chunk_hash=None}表明没有正在传输的chunk
             if success:
                 print("Congrats! You have completed the example!")
             else:
@@ -179,6 +195,7 @@ def process_inbound_udp(sock):
 
     elif Type == 4:
         # received an ACK pkt
+        # TODO:结束上一个计时器
         ack_num = socket.ntohl(Ack)
         chunk_hash = data[:20]
         chunkhash_str = bytes.hex(chunk_hash)
@@ -194,8 +211,9 @@ def process_inbound_udp(sock):
             next_data = config.haschunks[chunkhash_str][left: right]
             # send next data
             data_header = struct.pack("HBBHHII", socket.htons(52305), 3, 3, socket.htons(HEADER_LEN),
-                                      socket.htons(HEADER_LEN + len(next_data)), socket.htonl(ack_num + 1), 0)
+                                      socket.htons(HEADER_LEN + len(chunk_hash + next_data)), socket.htonl(ack_num + 1), 0)
             sock.sendto(data_header + chunk_hash + next_data, from_addr)
+            # TODO:开始新的计时器
 
 
 def process_user_input(sock):
@@ -212,6 +230,7 @@ def peer_run(config):
 
     try:
         while True:
+            # TODO: 遍历计时器，判断是否超时，若超时，则重传data，重置计时
             ready = select.select([sock, sys.stdin], [], [], 0.1)
             read_ready = ready[0]
             if len(read_ready) > 0:
