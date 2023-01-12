@@ -51,17 +51,17 @@ class Session:
         r = self.sending_window_frontier
         for i in range(l, r):
             chunk_data = self.sending_buffer[(i - l) * MAX_PAYLOAD:(i + 1 - l) * MAX_PAYLOAD]
-            print("Seq: " + str(i + self.expected_ack_num))
+            # print("Seq: " + str(i + self.expected_ack_num))
             data_header = struct.pack("HBBHHII", socket.htons(52305), 3, 3, socket.htons(HEADER_LEN),
                                       socket.htons(HEADER_LEN + len(chunk_data)),
                                       socket.htonl(i + 1), socket.htonl(0))
             self.sender_socket.sendto(data_header + chunk_data, self.receiver_socket)
-        print("send_all_in_sending_window")
+        # print("send_all_in_sending_window")
         self.timer = time.time()
 
     def send_other_in_buffer(self):
-        print("sending_window_frontier: " + str(self.sending_window_frontier))
-        print("sending_window_backend: " + str(self.sending_window_backend))
+        # print("sending_window_frontier: " + str(self.sending_window_frontier))
+        # print("sending_window_backend: " + str(self.sending_window_backend))
         l = self.sending_window_frontier
         r = self.sending_window_backend + self.sending_buffer_size
         for i in range(l, r):
@@ -73,7 +73,7 @@ class Session:
             if i == self.sending_window_backend:
                 self.timer = time.time()
             self.sending_window_frontier += 1
-        print("send_other_in_buffer")
+        # print("send_other_in_buffer")
 
 
 def process_download(sock, chunkfile, outputfile):
@@ -122,13 +122,11 @@ def process_inbound_udp(sock):
     # global start_timer
     global session_dict
 
-    # TODO: 根据from_addr(socket)从全局变量中读取正在传输的chunk_hash(如有）
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
     Magic, Team, Type, hlen, plen, Seq, Ack = struct.unpack("HBBHHII", pkt[:HEADER_LEN])
     data = pkt[HEADER_LEN:]
-    print("received")
-    print("struct.unpack  Seq: " + str(socket.ntohl(Seq)))
-    print("struct.unpack  Ack: " + str(socket.ntohl(Ack)))
+    # print("struct.unpack  Seq: " + str(socket.ntohl(Seq)))
+    # print("struct.unpack  Ack: " + str(socket.ntohl(Ack)))
 
     if Type == 0:
         print("received an WHOHAS pkt")
@@ -175,7 +173,6 @@ def process_inbound_udp(sock):
                                          socket.htonl(0))
                 get_pkt = get_header + get_chunk_hash
                 sock.sendto(get_pkt, from_addr)
-                print("socket : " + str((from_addr, addr)))
                 session = Session(from_addr, sock, get_chunk_hash)
                 session.expected_seq_num = 1
                 session_dict[(from_addr, addr)] = session
@@ -217,12 +214,13 @@ def process_inbound_udp(sock):
             sock.sendto(ack_pkt, from_addr)
 
             # see if finished
-            print("len(ex_received_chunk[chunkhash_str]): " + str(len(ex_received_chunk[chunkhash_str])))
-            print("CHUNK_DATA_SIZE: " + str(CHUNK_DATA_SIZE))
+            # print("len(ex_received_chunk[chunkhash_str]): " + str(len(ex_received_chunk[chunkhash_str])))
+            # print("CHUNK_DATA_SIZE: " + str(CHUNK_DATA_SIZE))
             if len(ex_received_chunk[chunkhash_str]) == CHUNK_DATA_SIZE:
                 # finished downloading this chunkdata!
                 # dump your received chunk to file in dict form using pickle
                 session.is_finished = True
+                session_dict[(from_addr, addr)] = None
                 with open(ex_output_file, "wb") as wf:
                     pickle.dump(ex_received_chunk, wf)
 
@@ -240,14 +238,13 @@ def process_inbound_udp(sock):
                 print(f"Received chunkhash: {received_chunkhash_str}")
                 success = chunkhash_str == received_chunkhash_str
                 print(f"Successful received: {success}")
-                # TODO: 重置{socket:chunk_hash=None}表明没有正在传输的chunk
                 if success:
                     print("Congrats! You have completed the example!")
                 else:
                     print("Example fails. Please check the example files carefully.")
-        else:
-            print("Seq != session.expected_seq_num Seq:" + str(Seq_num) + " expected_seq_num: " + str(
-                session.expected_seq_num))
+        # else:
+            # print("Seq != session.expected_seq_num Seq:" + str(Seq_num) + " expected_seq_num: " + str(
+            #     session.expected_seq_num))
 
     elif Type == 4:
         print("received an ACK pkt")
@@ -255,7 +252,6 @@ def process_inbound_udp(sock):
         ack_num = socket.ntohl(Ack)
         session = session_dict[(addr, from_addr)]
         chunk_hash = session.chunk_hash
-        # TODO:结束上一个计时器
         if session.expected_ack_num == ack_num:
             session.expected_ack_num = session.expected_ack_num + 1
             chunkhash_str = bytes.hex(chunk_hash)
@@ -275,9 +271,9 @@ def process_inbound_udp(sock):
                 right = MAX_PAYLOAD * (session.sending_window_backend + session.sending_buffer_size)
                 session.sending_buffer = config.haschunks[chunkhash_str][left:min(right, CHUNK_DATA_SIZE)]
                 session.send_other_in_buffer()
-        else:
-            print("ack_num != session.expected_ack_num Seq:" + str(ack_num) + " expected_seq_num: " + str(
-                session.expected_ack_num))
+        # else:
+        #     print("ack_num != session.expected_ack_num Seq:" + str(ack_num) + " expected_seq_num: " + str(
+        #         session.expected_ack_num))
 
 
 def process_user_input(sock):
@@ -300,7 +296,7 @@ def peer_run(config):
             # TODO: 遍历session计时器，判断是否超时，若超时，则重传data，重置计时
             for session in list(session_dict.values()):
                 if session.timer is not None and time.time() - session.timer > TIME_OUT:
-                    print("time out")
+                    print("session time out")
                     session.send_all_in_sending_window()
 
             ready = select.select([sock, sys.stdin], [], [], 0.1)
