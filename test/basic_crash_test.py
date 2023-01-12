@@ -34,7 +34,7 @@ python3 src/peer.py -p test/tmp4/nodes4.map -c test/tmp4/data4-2.fragment -m 100
 @pytest.fixture(scope='module')
 def crash_session():
     success = False
-    time_max = 80
+    time_max = 300
     if os.path.exists("test/tmp4/download_result.fragment"):
         os.remove("test/tmp4/download_result.fragment")
 

@@ -249,11 +249,14 @@ def process_inbound_udp(sock):
         # if session is None or session.is_finished :
         #     return
         Seq_num = socket.ntohl(Seq)
+        print(f" Seq:{Seq_num}")
         print("received a DATA Seq with " + str(Seq_num))
         if Seq_num != session.expected_seq_num:
+            print(f"expected_seq_num: {session.expected_seq_num}")
             ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
                                      socket.htons(HEADER_LEN),
-                                     socket.htonl(0), session.expected_seq_num - 1)
+                                     socket.htonl(0), socket.htonl(session.expected_seq_num - 1))
+            print(f"last Ack:{socket.ntohl(socket.htonl(session.expected_seq_num - 1))}")
             ack_pkt = ack_header
             sock.sendto(ack_pkt, from_addr)
         else:
@@ -268,6 +271,7 @@ def process_inbound_udp(sock):
             ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
                                      socket.htons(HEADER_LEN),
                                      socket.htonl(0), Seq)
+            print(f" Ack:{socket.ntohl(Seq)}")
             ack_pkt = ack_header
 
             sock.sendto(ack_pkt, from_addr)
@@ -317,6 +321,7 @@ def process_inbound_udp(sock):
             session.dup_ack_cnt = 1
         session.last_ack = ack_num
         if session.dup_ack_cnt == 3:
+            print("Duplicate ACK")
             session.send_all_in_sending_window()
             return
         if session.expected_ack_num == ack_num:
@@ -374,6 +379,7 @@ def peer_run(config):
 
     time_out = config.timeout
     crash_cnt = 0
+    print(f"default timeout {time_out}")
 
     try:
         while True:
@@ -381,10 +387,12 @@ def peer_run(config):
             for session in list(session_dict.values()):
                 if session is None:
                     continue
-                if time_out is None:
+                print(f"timeout_interval: {session.timeout_interval}")
+                if time_out == 0:
                     time_out = session.timeout_interval
                 if session.timer is not None and time.time() - session.timer > time_out:
                     print("session time out")
+                    print(f"Timeout: {time_out} seconds")
                     session.send_all_in_sending_window()
                 if session.ack_timer is not None and time.time() - session.ack_timer > CRASH_TIME_OUT:
                     print("session crashed")
