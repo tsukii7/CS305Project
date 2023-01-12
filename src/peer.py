@@ -202,8 +202,8 @@ def process_inbound_udp(sock):
         print("received an DATA pkt")
         # received a DATA pkt
         session = session_dict[(from_addr, addr)]
-        if session is None or session.is_finished :
-            return
+        # if session is None or session.is_finished :
+        #     return
         Seq_num = socket.ntohl(Seq)
         if Seq_num != session.expected_seq_num:
             ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
@@ -290,7 +290,8 @@ def process_inbound_udp(sock):
             if (ack_num) * MAX_PAYLOAD >= CHUNK_DATA_SIZE:
                 # finished
                 print(f"finished sending {chunkhash_str}")
-                session.timer = None
+                # session.timer = None
+                session_dict[(addr, from_addr)] = None
                 # print(f"finished sending {ex_sending_chunkhash}")
                 pass
             else:
@@ -329,6 +330,8 @@ def peer_run(config):
         while True:
             # TODO: 遍历session计时器，判断是否超时，若超时，则重传data，重置计时
             for session in list(session_dict.values()):
+                if session is None:
+                    continue
                 if time_out is None:
                     time_out = session.timeout_interval
                 if session.timer is not None and time.time() - session.timer > time_out:
