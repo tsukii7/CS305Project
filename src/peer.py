@@ -1,5 +1,6 @@
 import sys
 import os
+import math
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 import select
@@ -11,6 +12,7 @@ import hashlib
 import argparse
 import pickle
 import time
+import matplotlib.pyplot as plt
 
 """
 This is CS305 project skeleton code.
@@ -55,6 +57,9 @@ class Session:
         self.estimated_rtt = None
         self.dev_rtt = None
         self.timeout_interval = 1
+        self.cwnd = 1  # 拥塞窗口
+        self.ssthresh = 64
+        self.cwnd_size = [self.cwnd]
 
     def send_all_in_sending_window(self):
         l = self.sending_window_backend
@@ -71,6 +76,8 @@ class Session:
     def send_other_in_buffer(self):
         # print("sending_window_frontier: " + str(self.sending_window_frontier))
         # print("sending_window_backend: " + str(self.sending_window_backend))
+        # 根据cwnd大小调整发送缓冲区大小
+        self.sending_buffer_size = math.floor(self.cwnd)
         l = self.sending_window_frontier
         r = self.sending_window_backend + self.sending_buffer_size
         for i in range(l, r):
@@ -83,6 +90,15 @@ class Session:
             if i == self.sending_window_backend:
                 self.timer = time.time()
             self.sending_window_frontier += 1
+
+    def window_visual(self, window_size):
+        plt.title("Window Size")
+        plt.xlabel('time')
+        plt.ylabel('cwnd')
+        plt.plot(window_size, label='cwnd')
+        plt.show()
+        print(window_size)
+        plt.savefig('cwnd.png')
 
 
 def request_crash_chunkhash(sock):
@@ -232,6 +248,8 @@ def process_inbound_udp(sock):
         session = Session(sock, from_addr, chunk_hash)
         session_dict[(addr, from_addr)] = session
         chunkhash_str = bytes.hex(chunk_hash)
+        # 根据cwnd大小调整发送缓冲区大小
+        session.sending_buffer_size = math.floor(session.cwnd)
         session.sending_buffer = config.haschunks[chunkhash_str][:MAX_PAYLOAD * session.sending_buffer_size]
         session.send_other_in_buffer()
 
@@ -322,6 +340,9 @@ def process_inbound_udp(sock):
         session.last_ack = ack_num
         if session.dup_ack_cnt == 3:
             print("Duplicate ACK")
+            session.cwnd = 1
+            session.cwnd_size.append(session.cwnd)
+            session.ssthresh = max(math.floor(session.ssthresh / 2), 2)
             session.send_all_in_sending_window()
             return
         if session.expected_ack_num == ack_num:
@@ -334,15 +355,22 @@ def process_inbound_udp(sock):
             session.estimated_rtt = (1 - ALPHA) * session.estimated_rtt + ALPHA * sample_rtt
             session.dev_rtt = (1 - BETA) * session.dev_rtt + BETA * abs(sample_rtt - session.estimated_rtt)
             session.timeout_interval = session.estimated_rtt + 4 * session.dev_rtt
-
+            # congestion control
+            if session.cwnd < session.ssthresh:  # slow start
+                session.cwnd += 1
+            else:
+                session.cwnd = session.cwnd + 1 / session.cwnd  # 使用cwnd时需要向下取整
+            session.cwnd_size.append(session.cwnd)
             session.expected_ack_num = session.expected_ack_num + 1
             chunkhash_str = bytes.hex(chunk_hash)
             if (ack_num) * MAX_PAYLOAD >= CHUNK_DATA_SIZE:
                 # finished
                 print(f"finished sending {chunkhash_str}")
+                #######################################################
                 # session.timer = None
                 session_dict[(addr, from_addr)] = None
                 # print(f"finished sending {ex_sending_chunkhash}")
+                session.window_visual(session.cwnd_size)
                 pass
             else:
                 session.sending_window_backend += 1
@@ -351,6 +379,8 @@ def process_inbound_udp(sock):
                 else:
                     session.timer = time.time()
                 left = session.sending_window_backend * MAX_PAYLOAD
+                # 根据cwnd大小调整发送缓冲区大小
+                session.sending_buffer_size = math.floor(session.cwnd)
                 right = MAX_PAYLOAD * (session.sending_window_backend + session.sending_buffer_size)
                 session.sending_buffer = config.haschunks[chunkhash_str][left:min(right, CHUNK_DATA_SIZE)]
                 session.send_other_in_buffer()
@@ -393,6 +423,9 @@ def peer_run(config):
                 if session.timer is not None and time.time() - session.timer > time_out:
                     print("session time out")
                     print(f"Timeout: {time_out} seconds")
+                    session.cwnd = 1
+                    session.ssthresh = max(math.floor(session.ssthresh / 2), 2)
+                    session.cwnd_size.append(session.cwnd)
                     session.send_all_in_sending_window()
                 if session.ack_timer is not None and time.time() - session.ack_timer > CRASH_TIME_OUT:
                     print("session crashed")
