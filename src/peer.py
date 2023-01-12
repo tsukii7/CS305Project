@@ -240,7 +240,11 @@ def process_inbound_udp(sock):
     elif Type == 3:
         print("received an DATA pkt")
         # received a DATA pkt
+        if (from_addr, addr) not in session_dict:
+            return
         session = session_dict[(from_addr, addr)]
+        if session is None:
+            return
         session.ack_timer = time.time()
         # if session is None or session.is_finished :
         #     return
@@ -365,6 +369,7 @@ def peer_run(config):
     global crashed_chunkhash_list
 
     addr = (config.ip, config.port)
+    print(addr)
     sock = simsocket.SimSocket(config.identity, addr, verbose=config.verbose)
 
     time_out = config.timeout
