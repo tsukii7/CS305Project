@@ -45,6 +45,8 @@ class Session:
         self.expected_seq_num = 1
         self.expected_ack_num = 1
         self.is_finished = False
+        self.last_ack = None
+        self.dup_ack_cnt = 1
 
     def send_all_in_sending_window(self):
         l = self.sending_window_backend
@@ -56,7 +58,6 @@ class Session:
                                       socket.htons(HEADER_LEN + len(chunk_data)),
                                       socket.htonl(i + 1), socket.htonl(0))
             self.sender_socket.sendto(data_header + chunk_data, self.receiver_socket)
-        # print("send_all_in_sending_window")
         self.timer = time.time()
 
     def send_other_in_buffer(self):
@@ -73,7 +74,6 @@ class Session:
             if i == self.sending_window_backend:
                 self.timer = time.time()
             self.sending_window_frontier += 1
-        # print("send_other_in_buffer")
 
 
 def process_download(sock, chunkfile, outputfile):
@@ -129,7 +129,7 @@ def process_inbound_udp(sock):
     # print("struct.unpack  Ack: " + str(socket.ntohl(Ack)))
 
     if Type == 0:
-        print("received an WHOHAS pkt")
+        print("received a WHOHAS pkt")
         # received an WHOHAS pkt
         # see what chunk the sender has
         whohas_chunk_hash_list = []
@@ -200,7 +200,13 @@ def process_inbound_udp(sock):
         if session.is_finished:
             return
         Seq_num = socket.ntohl(Seq)
-        if Seq_num == session.expected_seq_num:
+        if Seq_num != session.expected_seq_num:
+            ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
+                                     socket.htons(HEADER_LEN),
+                                     socket.htonl(0), session.expected_seq_num-1)
+            ack_pkt = ack_header
+            sock.sendto(ack_pkt, from_addr)
+        else:
             session.expected_seq_num = session.expected_seq_num + 1
             chunk_hash = session.chunk_hash
             chunkhash_str = bytes.hex(chunk_hash)
@@ -252,6 +258,14 @@ def process_inbound_udp(sock):
         ack_num = socket.ntohl(Ack)
         session = session_dict[(addr, from_addr)]
         chunk_hash = session.chunk_hash
+        if session.last_ack is not None and session.last_ack == ack_num:
+            session.dup_ack_cnt += 1
+        else:
+            session.dup_ack_cnt = 1
+        session.last_ack = ack_num
+        if session.dup_ack_cnt == 3:
+            session.send_all_in_sending_window()
+            return
         if session.expected_ack_num == ack_num:
             session.expected_ack_num = session.expected_ack_num + 1
             chunkhash_str = bytes.hex(chunk_hash)
