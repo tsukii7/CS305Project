@@ -205,6 +205,7 @@ def process_inbound_udp(sock):
         # if session is None or session.is_finished :
         #     return
         Seq_num = socket.ntohl(Seq)
+        print("received a DATA Seq with "+str(Seq_num))
         if Seq_num != session.expected_seq_num:
             ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
                                      socket.htons(HEADER_LEN),
@@ -216,9 +217,9 @@ def process_inbound_udp(sock):
             chunk_hash = session.chunk_hash
             chunkhash_str = bytes.hex(chunk_hash)
             ex_received_chunk[chunkhash_str] += data
-            # print("*************************************************************************************")
-            # print( bytes.hex(data))
-            # print("*************************************************************************************")
+            print("*************************************************************************************")
+            print( bytes.hex(data))
+            print("*************************************************************************************")
             # send back ACK
             ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
                                      socket.htons(HEADER_LEN),
