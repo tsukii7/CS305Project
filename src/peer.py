@@ -202,7 +202,7 @@ def process_inbound_udp(sock):
         print("received an DATA pkt")
         # received a DATA pkt
         session = session_dict[(from_addr, addr)]
-        if session.is_finished:
+        if session is None or session.is_finished :
             return
         Seq_num = socket.ntohl(Seq)
         if Seq_num != session.expected_seq_num:
@@ -216,6 +216,9 @@ def process_inbound_udp(sock):
             chunk_hash = session.chunk_hash
             chunkhash_str = bytes.hex(chunk_hash)
             ex_received_chunk[chunkhash_str] += data
+            # print("*************************************************************************************")
+            # print( bytes.hex(data))
+            # print("*************************************************************************************")
             # send back ACK
             ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
                                      socket.htons(HEADER_LEN),
@@ -320,11 +323,15 @@ def peer_run(config):
     addr = (config.ip, config.port)
     sock = simsocket.SimSocket(config.identity, addr, verbose=config.verbose)
 
+    time_out = config.timeout
+
     try:
         while True:
             # TODO: 遍历session计时器，判断是否超时，若超时，则重传data，重置计时
             for session in list(session_dict.values()):
-                if session.timer is not None and time.time() - session.timer > session.timeout_interval:
+                if time_out is None:
+                    time_out = session.timeout_interval
+                if session.timer is not None and time.time() - session.timer > time_out:
                     print("session time out")
                     session.send_all_in_sending_window()
 
