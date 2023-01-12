@@ -21,6 +21,8 @@ CHUNK_DATA_SIZE = 512 * 1024
 HEADER_LEN = struct.calcsize("HBBHHII")
 MAX_PAYLOAD = 1024
 TIME_OUT = 10
+ALPHA = 0.125
+BETA = 0.25
 
 addr = None
 
@@ -47,6 +49,9 @@ class Session:
         self.is_finished = False
         self.last_ack = None
         self.dup_ack_cnt = 1
+        self.estimated_rtt = None
+        self.dev_rtt = None
+        self.timeout_interval = 1
 
     def send_all_in_sending_window(self):
         l = self.sending_window_backend
@@ -267,6 +272,16 @@ def process_inbound_udp(sock):
             session.send_all_in_sending_window()
             return
         if session.expected_ack_num == ack_num:
+            # estimate RTT
+            sample_rtt = time.time() - session.timer
+            if session.estimated_rtt is None:
+                session.estimated_rtt = sample_rtt
+            if session.dev_rtt is None:
+                session.dev_rtt = sample_rtt / 2
+            session.estimated_rtt = (1 - ALPHA) * session.estimated_rtt + ALPHA * sample_rtt
+            session.dev_rtt = (1 - BETA) * session.dev_rtt + BETA * abs(sample_rtt - session.estimated_rtt)
+            session.timeout_interval = session.estimated_rtt + 4 * session.dev_rtt
+
             session.expected_ack_num = session.expected_ack_num + 1
             chunkhash_str = bytes.hex(chunk_hash)
             if (ack_num) * MAX_PAYLOAD >= CHUNK_DATA_SIZE:
@@ -309,7 +324,7 @@ def peer_run(config):
         while True:
             # TODO: 遍历session计时器，判断是否超时，若超时，则重传data，重置计时
             for session in list(session_dict.values()):
-                if session.timer is not None and time.time() - session.timer > TIME_OUT:
+                if session.timer is not None and time.time() - session.timer > session.timeout_interval:
                     print("session time out")
                     session.send_all_in_sending_window()
 
