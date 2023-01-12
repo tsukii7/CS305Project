@@ -14,6 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 import logging
 os.chdir(os.path.join(os.path.dirname(__file__), ".."))
 
+
+
 class PeerProc:
     def __init__(self, identity, peer_file_loc, node_map_loc, haschunk_loc, max_transmit = 1, timeout = 60):
         self.id = identity
@@ -33,8 +35,13 @@ class PeerProc:
             cmd = f"python3 -u {self.peer_file_loc} -p {self.node_map_loc} -c {self.haschunk_loc} -m {self.max_transmit} -i {self.id}"
 
         self.process = subprocess.Popen(cmd.split(" "), stdin=subprocess.PIPE,stdout=subprocess.DEVNULL,text=True, bufsize=1, universal_newlines=True)
+
+        peer_stdout_file = open(f"log/peer{self.id}.stdout", "w")
+        self.process = subprocess.Popen(cmd.split(" "), stdin=subprocess.PIPE, stdout=peer_stdout_file,
+                                                 stderr=peer_stdout_file, text=True, bufsize=1, universal_newlines=True)
+
         # ensure peer is running
-        time.sleep(1) 
+        time.sleep(1)
 
     def send_cmd(self, cmd):
         self.process.stdin.write(cmd)
@@ -87,14 +94,14 @@ class GradingSession:
                 pkt = self.checker_sock.recv_pkt_from()
                 self.peer_list[pkt.from_addr].record_send_pkt(pkt.pkt_type, pkt.to_addr)
                 self.checker_recv_queue.put(pkt)
-    
+
     def send_pkt(self):
         while not self._FINISH:
             try:
                 pkt = self.checker_send_queue.get(timeout = 0.1)
             except:
                 continue
-            
+
             if pkt.to_addr in self.peer_list:
                 self.peer_list[pkt.to_addr].record_recv_pkt(pkt.pkt_type, pkt.from_addr)
 
@@ -119,7 +126,7 @@ class GradingSession:
         test_env = os.getenv("SIMULATOR")
         if test_env is None:
             raise Exception("Void env!")
-        
+
         # run workers
         if not self.spiffy:
             self.start_time = time.time()

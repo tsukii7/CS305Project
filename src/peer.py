@@ -24,6 +24,7 @@ TIME_OUT = 10
 ALPHA = 0.125
 BETA = 0.25
 
+CRASH_TIME_OUT = 5
 addr = None
 
 config = None
@@ -32,6 +33,7 @@ ex_received_chunk = dict()
 ex_downloading_chunkhash = dict()
 ex_sending_chunkhash = []
 session_dict = {}
+crashed_chunkhash_list = []
 
 
 class Session:
@@ -40,6 +42,7 @@ class Session:
         self.receiver_socket = receiver_socket
         self.chunk_hash = chunk_hash
         self.timer = None
+        self.ack_timer = None
         self.sending_buffer = None
         self.sending_buffer_size = 5
         self.sending_window_frontier = 0
@@ -71,7 +74,8 @@ class Session:
         l = self.sending_window_frontier
         r = self.sending_window_backend + self.sending_buffer_size
         for i in range(l, r):
-            chunk_data = self.sending_buffer[(i - self.sending_window_backend) * MAX_PAYLOAD:(i + 1 - self.sending_window_backend) * MAX_PAYLOAD]
+            chunk_data = self.sending_buffer[(i - self.sending_window_backend) * MAX_PAYLOAD:(
+                                                                                                     i + 1 - self.sending_window_backend) * MAX_PAYLOAD]
             data_header = struct.pack("HBBHHII", socket.htons(52305), 3, 3, socket.htons(HEADER_LEN),
                                       socket.htons(HEADER_LEN + len(chunk_data)),
                                       socket.htonl(i + 1), 0)
@@ -79,6 +83,36 @@ class Session:
             if i == self.sending_window_backend:
                 self.timer = time.time()
             self.sending_window_frontier += 1
+
+
+def request_crash_chunkhash(sock):
+    global crashed_chunkhash_list
+    print("request_crash_chunkhash")
+    print(f"crashed_chunkhash_list {crashed_chunkhash_list}")
+
+    request_chunkhash = bytes()
+    for hash in crashed_chunkhash_list:
+        request_chunkhash += hash
+    whohas_header = struct.pack("HBBHHII", socket.htons(52305), 3, 0, socket.htons(HEADER_LEN),
+                                socket.htons(HEADER_LEN + len(request_chunkhash)), socket.htonl(0), socket.htonl(0))
+    whohas_pkt = whohas_header + request_chunkhash
+
+    # Step3: flooding whohas to all peers in peer list
+    peer_list = config.peers
+    for p in peer_list:
+        if int(p[0]) != config.identity:
+            sock.sendto(whohas_pkt, (p[1], int(p[2])))
+
+
+def process_crash(crash_hash):
+    print("process_crash")
+    print(f"crash_hash {crash_hash}")
+    global crashed_chunkhash_list
+
+    crashed_chunkhash_list.append(crash_hash)
+    hash_str = bytes.hex(crash_hash)
+    ex_downloading_chunkhash[hash_str] = 0
+    ex_received_chunk[hash_str] = bytes()
 
 
 def process_download(sock, chunkfile, outputfile):
@@ -126,6 +160,7 @@ def process_inbound_udp(sock):
     global ex_sending_chunkhash
     # global start_timer
     global session_dict
+    global crashed_chunkhash_list
 
     pkt, from_addr = sock.recvfrom(BUF_SIZE)
     Magic, Team, Type, hlen, plen, Seq, Ack = struct.unpack("HBBHHII", pkt[:HEADER_LEN])
@@ -167,6 +202,10 @@ def process_inbound_udp(sock):
         for i in range(0, len(data), 20):
             get_chunk_hash_list.append(data[i:i + 20])
         get_chunk_hash = get_chunk_hash_list[0]
+        if get_chunk_hash in crashed_chunkhash_list:
+            crashed_chunkhash_list.remove(get_chunk_hash)
+            print(f"remove crash_hash {get_chunk_hash}")
+
         chunkhash_str = bytes.hex(get_chunk_hash)
         chunk_hash_list = list(ex_downloading_chunkhash.keys())
         for hash in chunk_hash_list:
@@ -202,14 +241,15 @@ def process_inbound_udp(sock):
         print("received an DATA pkt")
         # received a DATA pkt
         session = session_dict[(from_addr, addr)]
+        session.ack_timer = time.time()
         # if session is None or session.is_finished :
         #     return
         Seq_num = socket.ntohl(Seq)
-        print("received a DATA Seq with "+str(Seq_num))
+        print("received a DATA Seq with " + str(Seq_num))
         if Seq_num != session.expected_seq_num:
             ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
                                      socket.htons(HEADER_LEN),
-                                     socket.htonl(0), session.expected_seq_num-1)
+                                     socket.htonl(0), session.expected_seq_num - 1)
             ack_pkt = ack_header
             sock.sendto(ack_pkt, from_addr)
         else:
@@ -217,9 +257,9 @@ def process_inbound_udp(sock):
             chunk_hash = session.chunk_hash
             chunkhash_str = bytes.hex(chunk_hash)
             ex_received_chunk[chunkhash_str] += data
-            print("*************************************************************************************")
-            print( bytes.hex(data))
-            print("*************************************************************************************")
+            # print("*************************************************************************************")
+            # print( bytes.hex(data))
+            # print("*************************************************************************************")
             # send back ACK
             ack_header = struct.pack("HBBHHII", socket.htons(52305), 3, 4, socket.htons(HEADER_LEN),
                                      socket.htons(HEADER_LEN),
@@ -258,8 +298,8 @@ def process_inbound_udp(sock):
                 else:
                     print("Example fails. Please check the example files carefully.")
         # else:
-            # print("Seq != session.expected_seq_num Seq:" + str(Seq_num) + " expected_seq_num: " + str(
-            #     session.expected_seq_num))
+        # print("Seq != session.expected_seq_num Seq:" + str(Seq_num) + " expected_seq_num: " + str(
+        #     session.expected_seq_num))
 
     elif Type == 4:
         print("received an ACK pkt")
@@ -321,15 +361,18 @@ def process_user_input(sock):
 def peer_run(config):
     global session_dict
     global addr
+    global CRASH_TIME_OUT
+    global crashed_chunkhash_list
 
     addr = (config.ip, config.port)
     sock = simsocket.SimSocket(config.identity, addr, verbose=config.verbose)
 
     time_out = config.timeout
+    crash_cnt = 0
 
     try:
         while True:
-            # TODO: 遍历session计时器，判断是否超时，若超时，则重传data，重置计时
+            # TODO: 遍历session.timer，判断发送是否超时，若超时，则重传data，重置计时
             for session in list(session_dict.values()):
                 if session is None:
                     continue
@@ -338,6 +381,14 @@ def peer_run(config):
                 if session.timer is not None and time.time() - session.timer > time_out:
                     print("session time out")
                     session.send_all_in_sending_window()
+                if session.ack_timer is not None and time.time() - session.ack_timer > CRASH_TIME_OUT:
+                    print("session crashed")
+                    process_crash(session.chunk_hash)
+                    session_dict[(session.sender_socket, addr)] = None
+
+            crash_cnt = (crash_cnt + 1) % 10
+            if crash_cnt == 9 and len(crashed_chunkhash_list) > 0:
+                request_crash_chunkhash(sock)
 
             ready = select.select([sock, sys.stdin], [], [], 0.1)
             read_ready = ready[0]
